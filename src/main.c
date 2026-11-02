@@ -29,10 +29,16 @@ int main(){
             continue;
         }
         while(1){
-            char *encontrado;
             if(recibidos == LIMITE){fprintf(stderr, "La petición supera el tamaño del buffer\n"); break;}
             rcv = recv(ns, buffer + recibidos, LIMITE - recibidos, 0);
-            if(rcv == -1){perror("recv"); break;}
+            if(rcv == -1){
+                if(errno == EINTR){
+                    fprintf(stderr, "Interrupción por señal\n"); 
+                    continue;
+                }
+                perror("recv"); 
+                break;
+            }
             if(rcv == 0){
                 if(recibidos == 0){
                     fprintf(stderr, "El cliente ha cerrado la conexión sin enviar datos\n"); 
@@ -43,11 +49,6 @@ int main(){
                 }
             }
             recibidos += rcv;
-            encontrado = memmem(buffer, recibidos, "\r\n\r\n", 4);
-            if(encontrado == NULL){continue;}
-            size_t longitud_encabezado = encontrado - buffer + 4;
-            if(longitud_encabezado > LIMITE){fprintf(stderr, "El encabezado supera el limite establecido\n"); break;}
-            printf("%zu\n", longitud_encabezado);
             break;
         }
         close(ns);
