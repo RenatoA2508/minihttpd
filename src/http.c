@@ -7,6 +7,9 @@
 #include <arpa/inet.h>
 
 #define LIMITE_URI 2048
+#define LIMITE_ENCABEZADOS 8192
+#define LIMITE_PRIMERA_LINEA 4096
+#define LIMITE_LINEA_ENCABEZADO 4096
 
 enum resultados {
     HTTP_OK,
@@ -123,15 +126,51 @@ int validar_valor_host(const char *cadena, size_t longitud_cadena){
     return 1;
 }
 
+int validar_valor_user_agent(const char *cadena, size_t longitud_cadena){
+    /*Solo validacion de caracteres, no de sintaxis*/
+    for(size_t i=0; i<longitud_cadena; i++){
+        if((unsigned char)cadena[i] == 0x7F){return 0;}
+        if((unsigned char)cadena[i] < 0x20 && (unsigned char)cadena[i] != 0x09){return 0;}
+    }
+    return 1;
+}
 
-int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, size_t capacidad_ruta){
-    
+int validar_valor_connection(const char *cadena, size_t longitud_cadena, int *cerrar_conexion){
+    const char *p = cadena;
+    size_t longitud_token = 0;
+    const char *fin_token;
+    while(p < cadena + longitud_cadena){
+            const char *coma =memchr(p, ',', (cadena + longitud_cadena) - p);
+            if(coma == NULL){
+                fin_token = cadena + longitud_cadena;
+            }else{
+                fin_token = coma;
+            }
+            const char *aux_inicio = p, *aux_fin = fin_token;
+            longitud_token = extraer_valor_encabezado(&aux_inicio, &aux_fin);
+            if(longitud_token > 0){
+                if(es_token_http(aux_inicio, longitud_token) == 0){return 0;}
+                if(longitud_token == 5 && strncasecmp(aux_inicio, "close", 5) == 0){*cerrar_conexion = 1;}
+            } /*Ignora tokens vacios*/
+            if(coma == NULL){break;}
+            p = coma + 1;
+        }
+    return 1;
+}
+
+int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, size_t capacidad_ruta, int *cerrar_conexion_salida){
+    int cerrar_conexion = 0; /*Mantener la conexion abierta. Por defecto en HTTP*/
+
     const char *fin_encabezado = memmem(buffer, longitud, "\r\n\r\n", 4); /*Identifica el fin de la zona de encabezados*/
-    if(fin_encabezado == NULL){return HTTP_INCOMPLETA;}
-
+    if(fin_encabezado == NULL){
+        if(longitud >= LIMITE_ENCABEZADOS){return HTTP_INVALIDA;} /*No existe \r\n\r\n y la seccion iguala o supera el limite*/
+        return HTTP_INCOMPLETA;
+    }
+    if(fin_encabezado - buffer + 4 > LIMITE_ENCABEZADOS){return HTTP_INVALIDA;} /*Si existe \r\n\r\n, pero la seccion supera el limite*/
     const char *fin_primera_linea = memmem(buffer, longitud, "\r\n", 2); /*Identifica el fin de la primera linea de la solicitud HTTP-> GET /___ HTTP/1.1 */
     if(fin_primera_linea == NULL){return HTTP_INVALIDA;}
     size_t longitud_primera_linea = fin_primera_linea - buffer;
+    if(longitud_primera_linea > LIMITE_PRIMERA_LINEA){return HTTP_INVALIDA;}
     /*Analisis Metodo*/ 
     const char *primer_espacio = memchr(buffer, ' ', longitud_primera_linea); /*Primer espacio -> GET_/ */
 
@@ -165,11 +204,7 @@ int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, siz
     if(longitud_ruta >= capacidad_ruta || longitud_ruta == 0){return HTTP_INVALIDA;}
 
     if(validar_caracteres_uri(primer_espacio + 1, longitud_uri) == 0){return HTTP_INVALIDA;}
-    /*
-    memcpy(ruta, primer_espacio + 1, longitud_ruta);
-    ruta[longitud_ruta] = '\0';
-    */
-
+    
     /*Analisis HTTP/1.1*/
     size_t longitud_protocolo = fin_primera_linea - (segundo_espacio + 1);
     
@@ -177,12 +212,13 @@ int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, siz
 
     const char *inicio_linea_encabezado = fin_primera_linea + 2;
     int contador_host = 0;
-
+    
     /*Analisis de encabezados*/
     while(inicio_linea_encabezado < fin_encabezado + 2){
         const char *fin_linea_encabezado = memmem(inicio_linea_encabezado, (fin_encabezado + 2) - (inicio_linea_encabezado), "\r\n", 2);
         if(fin_linea_encabezado == NULL){return HTTP_INVALIDA;}
         size_t longitud_linea_encabezado = fin_linea_encabezado - (inicio_linea_encabezado);
+        if(longitud_linea_encabezado > LIMITE_LINEA_ENCABEZADO){return HTTP_INVALIDA;}
         const char *dos_puntos = memchr(inicio_linea_encabezado, ':', longitud_linea_encabezado);
         if(dos_puntos == NULL){return HTTP_INVALIDA;}
         size_t longitud_nombre_encabezado = dos_puntos - inicio_linea_encabezado;
@@ -194,19 +230,36 @@ int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, siz
         const char *inicio_valor = dos_puntos + 1;
         const char *fin_valor = fin_linea_encabezado;
         size_t longitud_valor_encabezado = extraer_valor_encabezado(&inicio_valor, &fin_valor);
+        for(size_t i=0; i<longitud_valor_encabezado ; i++){
+            if((unsigned char)inicio_valor[i] == 0x7F){return HTTP_INVALIDA;}
+            if((unsigned char)inicio_valor[i] < 0x20 && (unsigned char)inicio_valor[i] != 0x09){return HTTP_INVALIDA;}
+        }
         if(longitud_nombre_encabezado == 4 && strncasecmp(inicio_linea_encabezado, "Host", 4) == 0){
             contador_host += 1;
             if(contador_host > 1){return HTTP_INVALIDA;}
             if(validar_valor_host(inicio_valor, longitud_valor_encabezado) == 0){return HTTP_INVALIDA;}
             if(longitud_valor_encabezado == 0){return HTTP_INVALIDA;}
         }
+        if(longitud_nombre_encabezado == 10 && strncasecmp(inicio_linea_encabezado, "User-Agent", 10) == 0){
+            if(longitud_valor_encabezado == 0){return HTTP_INVALIDA;}
+            if(validar_valor_user_agent(inicio_valor, longitud_valor_encabezado) == 0){return HTTP_INVALIDA;}
+        }
+        if(longitud_nombre_encabezado == 10 && strncasecmp(inicio_linea_encabezado, "Connection", 10) == 0){
+            if(validar_valor_connection(inicio_valor, longitud_valor_encabezado, &cerrar_conexion) == 0){return HTTP_INVALIDA;}
+        }
         inicio_linea_encabezado = fin_linea_encabezado + 2;
+    }
+    if(contador_host == 1){
+        memcpy(ruta, primer_espacio + 1, longitud_ruta);
+        ruta[longitud_ruta] = '\0';
     }
     if(contador_host != 1){
         return HTTP_INVALIDA;
     }else if (metodo_no_permitido == 0){
+        *cerrar_conexion_salida = cerrar_conexion;
         return HTTP_OK;
     }else{
+        *cerrar_conexion_salida = cerrar_conexion;
         return HTTP_METODO_NO_PERMITIDO;
     }
 }
