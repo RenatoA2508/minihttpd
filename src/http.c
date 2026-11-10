@@ -5,18 +5,9 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <arpa/inet.h>
+#include "http.h"
 
-#define LIMITE_URI 2048
-#define LIMITE_ENCABEZADOS 8192
-#define LIMITE_PRIMERA_LINEA 4096
-#define LIMITE_LINEA_ENCABEZADO 4096
 
-enum resultados {
-    HTTP_OK,
-    HTTP_INCOMPLETA,
-    HTTP_INVALIDA,
-    HTTP_METODO_NO_PERMITIDO,
-};
 
 int es_token_http(const char *cadena, size_t longitud_cadena){
     if(longitud_cadena == 0){return 0;}
