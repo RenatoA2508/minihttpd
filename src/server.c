@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <errno.h>
 
 #define QLEN 5
 
@@ -41,4 +42,23 @@ int crear_socket_serv(const char *puerto){
 
     return s;
 
+}
+
+int enviar(int s, const char *buffer, size_t bytes_enviar){
+    size_t enviados = 0;
+    ssize_t snd = 0;
+    while(enviados < bytes_enviar){
+        snd = send(s, buffer + enviados, bytes_enviar - enviados, MSG_NOSIGNAL); /*MSG_NOSIGNAL evita generar una señal SIGPIPE si el cliente cierra la conexion*/
+        if(snd == -1){
+            if(errno == EINTR){
+                fprintf(stderr, "Interrupcion por señal");
+                continue;
+            }
+            perror("send"); 
+            return -1;
+        }
+        if(snd == 0){fprintf(stderr, "Falta de progreso"); return -1;}
+        enviados += snd;
+    }
+    return 1;
 }

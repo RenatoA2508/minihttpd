@@ -25,6 +25,10 @@ int main(){
     puts("Servidor escuchando...");
     while(1){
         char buffer[LIMITE];
+        char buffer_salida[LIMITE];
+        int tipo_http = 0;
+        int bytes_generados = 0;
+        int cod_estado = 0;
         ssize_t rcv = 0;
         size_t recibidos = 0;
         int ns = accept(s, NULL, NULL);
@@ -39,7 +43,7 @@ int main(){
         int cerrar_conexion_salida = 1;
         char ruta[LIMITE_URI+1];
         while(1){
-            if(recibidos == LIMITE){fprintf(stderr, "La petición supera el tamaño del buffer\n"); break;}
+            if(recibidos == LIMITE){fprintf(stderr, "La petición supera el tamaño del buffer\n"); cod_estado = 400; break;}
             rcv = recv(ns, buffer + recibidos, LIMITE - recibidos, 0);
             if(rcv == -1){
                 if(errno == EINTR){
@@ -55,22 +59,26 @@ int main(){
                     break;
                 }else{
                     fprintf(stderr, BAD_REQUEST); 
+                    cod_estado = 400;
                     break;
                 }
             }
             recibidos += rcv;
             
-            int tipo_http = analizar_solicitud_http(buffer, recibidos, ruta, sizeof ruta, &cerrar_conexion_salida);
+            tipo_http = analizar_solicitud_http(buffer, recibidos, ruta, sizeof ruta, &cerrar_conexion_salida);
 
             switch(tipo_http){
                 case HTTP_OK:
                     printf("Ruta: %s\n %s", ruta, OK);
+                    cod_estado = 200;
                     break;
                 case HTTP_METODO_NO_PERMITIDO:
                     fprintf(stderr, NOT_ALLOWED);
+                    cod_estado = 405;
                     break;
                 case HTTP_INVALIDA:
                     fprintf(stderr, BAD_REQUEST);
+                    cod_estado = 400;
                     break;
                 case HTTP_INCOMPLETA:
                     
@@ -78,14 +86,29 @@ int main(){
             }
 
             if(tipo_http == HTTP_INCOMPLETA){
-                if(recibidos >= LIMITE){fprintf(stderr, BAD_REQUEST); break;}
-                continue;
+                if(recibidos >= LIMITE){fprintf(stderr, BAD_REQUEST); cod_estado = 400; break;}
+                continue; /*Continua si la solicitud esta incompleta pero todavia hay espacio para recibirla*/
             }
             if(tipo_http == HTTP_OK){
                 break;
             }
             break;
         }
+        bytes_generados = generar_respuesta_http(cod_estado, "text/plain", 4, 0, buffer_salida, sizeof buffer_salida); /*Temporal*/
+
+        if(bytes_generados <= 0){
+            fprintf(stderr, "No se pudo generar la respuesta HTTP");
+        }else{
+            if(enviar(ns, buffer_salida, bytes_generados) != 1){
+                fprintf(stderr, "Error al enviar encabezados de respuesta HTTP");
+            }else{
+                const char *temp = "Hola";
+                size_t tam_temp = strlen(temp);
+                if(enviar(ns, temp, tam_temp) != 1){fprintf(stderr, "Error al enviar el cuerpo de respuesta HTTP");}
+            }
+            
+        }    
+
         close(ns);
     }
     close(s);

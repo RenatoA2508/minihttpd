@@ -255,3 +255,48 @@ int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, siz
     }
 }
 
+const char *obtener_cod_estado(int codigo){
+    switch(codigo){
+        case 200:
+            return "200 OK";
+        case 400:
+            return "400 Bad Request";
+        case 403:
+            return "403 Forbidden";
+        case 404:
+            return "404 Not Found";
+        case 405:
+            return "405 Method Not Allowed";
+        case 500:
+            return "500 Internal Server Error";
+        default:
+            return NULL;
+    }
+}
+
+int generar_respuesta_http(int cod_estado, const char *mime, size_t longitud_cuerpo, int persistencia, char *buf_salida, size_t capacidad_buf_salida){
+    if(buf_salida == NULL){return -1;}
+    if(capacidad_buf_salida == 0){return -1;}
+    const char *protocolo = "HTTP/1.1 ";
+    const char *estado = obtener_cod_estado(cod_estado);
+    if(estado == NULL){return -1;}
+    const char *content_type = "Content-Type: ";
+    if(mime == NULL){return -1;}
+    const char *content_length = "Content-Length: ";
+    const char *connection = "Connection: ";
+    const char *valor_connection;
+    if(persistencia == 1){
+        valor_connection = "keep-alive";
+    }else{
+        valor_connection = "close";
+    }
+    int tamaño_respuesta = snprintf(buf_salida, capacidad_buf_salida, "%s%s\r\n%s%s\r\n%s%zu\r\n%s%s\r\n\r\n", protocolo, estado, content_type, 
+                                        mime, content_length, longitud_cuerpo, connection, valor_connection);
+
+    if(tamaño_respuesta < 0){
+        return -1;
+    }else if((size_t) tamaño_respuesta >= capacidad_buf_salida){
+        return 0;
+    }
+    return tamaño_respuesta;
+}
