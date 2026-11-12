@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <errno.h>
 
-int solicitar_archivo(int *fd, const char *ruta, size_t *tam_archivo){
+int solicitar_archivo(int *fd, const char *ruta, size_t *tam_archivo, char *ruta_efectiva, size_t tam_ruta_efectiva){
     *fd = -1;
     *tam_archivo = 0;
     char directorio_permitido[PATH_MAX];
@@ -30,7 +30,7 @@ int solicitar_archivo(int *fd, const char *ruta, size_t *tam_archivo){
         return -2;
     }
     
-
+    
     char canon_archivo[PATH_MAX];
     if(realpath(ruta_candidata, canon_archivo)==NULL){
         if(errno == ENOENT){return 0;}
@@ -58,6 +58,12 @@ int solicitar_archivo(int *fd, const char *ruta, size_t *tam_archivo){
     if(buf.st_size < 0 || (uintmax_t)buf.st_size > (uintmax_t)SIZE_MAX){close(*fd); *fd = -1; return -2;}
 
     *tam_archivo = buf.st_size;
+    int bytes_ruta_efectiva = snprintf(ruta_efectiva, tam_ruta_efectiva, "%s", canon_archivo);
+    if(bytes_ruta_efectiva < 0 || (size_t) bytes_ruta_efectiva >= tam_ruta_efectiva){
+        close(*fd); 
+        *fd = -1;
+        return -2;
+    }
     return 1;
 }
 

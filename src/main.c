@@ -2,6 +2,7 @@
 #include "server.h"
 #include "http.h"
 #include "files.h"
+#include "mime.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
@@ -98,9 +99,11 @@ int main(){
         int fd = -1;
         char buffer_lectura[LIMITE];
         size_t tam_archivo = 0;
-        int tipo_files;
+        int tipo_files = 0;
+        char ruta_efectiva[1024];
         if(tipo_http == HTTP_OK){    
-            tipo_files = solicitar_archivo(&fd, ruta, &tam_archivo);
+            tipo_files = solicitar_archivo(&fd, ruta, &tam_archivo, ruta_efectiva, sizeof ruta_efectiva);
+            printf("Ruta: %s\n", ruta);
             switch(tipo_files){
                 case 1: cod_estado = 200; break;
                 case 0: cod_estado = 404; break;
@@ -108,16 +111,20 @@ int main(){
                 case -2: cod_estado = 500; break;
             }
         }
-        bytes_generados = generar_respuesta_http(cod_estado, "text/plain", tam_archivo, 0, buffer_salida, sizeof buffer_salida); /*Temporal*/
-
-        if(bytes_generados <= 0){
-            fprintf(stderr, "No se pudo generar la respuesta HTTP");
-        }else{
-            if(enviar(ns, buffer_salida, bytes_generados) != 1){
-                fprintf(stderr, "Error al enviar encabezados de respuesta HTTP");
+        const char *mime = "text/plain";
+        if(cod_estado == 200 && tipo_files == 1){
+            mime = obtener_tipo_mime(ruta_efectiva);
+        }
+        if(cod_estado != 0){
+            bytes_generados = generar_respuesta_http(cod_estado, mime, tam_archivo, 0, buffer_salida, sizeof buffer_salida); 
+            if(bytes_generados <= 0){
+                fprintf(stderr, "No se pudo generar la respuesta HTTP");
             }else{
-                ssize_t leidos = 0;
-                if(cod_estado == 200 && tipo_files == 1){
+                if(enviar(ns, buffer_salida, bytes_generados) != 1){
+                    fprintf(stderr, "Error al enviar encabezados de respuesta HTTP");
+                }else{
+                    ssize_t leidos = 0;
+                if(cod_estado == 200 && tipo_files == 1){   
                     while(1){
                         leidos = read(fd, buffer_lectura, sizeof buffer_lectura);
                         if(leidos == -1){
@@ -132,10 +139,12 @@ int main(){
                         if(enviar(ns, buffer_lectura, leidos) != 1){fprintf(stderr, "Error al enviar el cuerpo de respuesta HTTP"); break;}
                     }
                 }
-                
+                    
+                }
             }
-        }    
-
+        
+            
+        }
         close(ns);
         if(fd != -1){close(fd);}
     }
