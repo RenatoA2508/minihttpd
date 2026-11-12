@@ -1,0 +1,13 @@
+*{
+    font-family: 'Times New Roman', Times, serif;
+    
+}
+
+#titulo{
+    color: red;
+    padding: 15px;
+}
+
+.parrafo{
+    color: blue;
+}

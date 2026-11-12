@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "server.h"
 #include "http.h"
+#include "files.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
@@ -94,7 +95,20 @@ int main(){
             }
             break;
         }
-        bytes_generados = generar_respuesta_http(cod_estado, "text/plain", 4, 0, buffer_salida, sizeof buffer_salida); /*Temporal*/
+        int fd = -1;
+        char buffer_lectura[LIMITE];
+        size_t tam_archivo = 0;
+        int tipo_files;
+        if(tipo_http == HTTP_OK){    
+            tipo_files = solicitar_archivo(&fd, ruta, &tam_archivo);
+            switch(tipo_files){
+                case 1: cod_estado = 200; break;
+                case 0: cod_estado = 404; break;
+                case -1: cod_estado = 403; break;
+                case -2: cod_estado = 500; break;
+            }
+        }
+        bytes_generados = generar_respuesta_http(cod_estado, "text/plain", tam_archivo, 0, buffer_salida, sizeof buffer_salida); /*Temporal*/
 
         if(bytes_generados <= 0){
             fprintf(stderr, "No se pudo generar la respuesta HTTP");
@@ -102,14 +116,28 @@ int main(){
             if(enviar(ns, buffer_salida, bytes_generados) != 1){
                 fprintf(stderr, "Error al enviar encabezados de respuesta HTTP");
             }else{
-                const char *temp = "Hola";
-                size_t tam_temp = strlen(temp);
-                if(enviar(ns, temp, tam_temp) != 1){fprintf(stderr, "Error al enviar el cuerpo de respuesta HTTP");}
+                ssize_t leidos = 0;
+                if(cod_estado == 200 && tipo_files == 1){
+                    while(1){
+                        leidos = read(fd, buffer_lectura, sizeof buffer_lectura);
+                        if(leidos == -1){
+                            if(errno == EINTR){
+                                fprintf(stderr, "Interrupción por señal\n"); 
+                                continue;
+                            }
+                            perror("read"); 
+                            break;
+                        }
+                        if(leidos == 0){break;}
+                        if(enviar(ns, buffer_lectura, leidos) != 1){fprintf(stderr, "Error al enviar el cuerpo de respuesta HTTP"); break;}
+                    }
+                }
+                
             }
-            
         }    
 
         close(ns);
+        if(fd != -1){close(fd);}
     }
     close(s);
     return EXIT_SUCCESS;
