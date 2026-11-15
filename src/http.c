@@ -244,10 +244,12 @@ int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, siz
         memcpy(ruta, primer_espacio + 1, longitud_ruta);
         ruta[longitud_ruta] = '\0';
     }
-    *bytes_consumidos = fin_encabezado - buffer + 4;
+    
     if(contador_host != 1){
         return HTTP_INVALIDA;
-    }else if (metodo_no_permitido == 0){
+    }
+    *bytes_consumidos = fin_encabezado - buffer + 4;
+    if (metodo_no_permitido == 0){
         *cerrar_conexion_salida = cerrar_conexion;
         return HTTP_OK;
     }else{

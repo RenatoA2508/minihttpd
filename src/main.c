@@ -111,8 +111,48 @@ int main(){
                 char ruta[LIMITE_URI+1];
                 int term_atencion_clt = 0;
                 if(events[i].events & EPOLLIN && clt->fase == RECIBIENDO){
+                    procesar_buf_clt:
                     while(1){
-                        if(clt->recibidos == LIMITE){fprintf(stderr, "La petición supera el tamaño del buffer\n"); clt->cod_estado = 400; break;}
+                        if(clt->recibidos > 0){
+                            size_t bytes_consumidos = 0;
+                            tipo_http = analizar_solicitud_http(clt->buffer, clt->recibidos, ruta, sizeof ruta, &clt->cerrar_conexion_salida, &bytes_consumidos);
+                            
+                            size_t restantes = 0;
+                            
+                            switch(tipo_http){
+                                case HTTP_OK:
+                                    printf("Ruta: %s\n %s", ruta, OK);
+                                    clt->cod_estado = 200;
+                                    if(bytes_consumidos <= 0 || bytes_consumidos > clt->recibidos){liberar_recursos(ep, clt), term_atencion_clt = 1; break;}
+                                    restantes = clt->recibidos - bytes_consumidos;
+                                    memmove(clt->buffer, clt->buffer + bytes_consumidos, restantes);
+                                    clt->recibidos = restantes;
+                                    break;
+                                case HTTP_METODO_NO_PERMITIDO:
+                                    fprintf(stderr, NOT_ALLOWED);
+                                    clt->cod_estado = 405;
+                                    clt->cerrar_conexion_salida = 1;
+                                    break;
+                                case HTTP_INVALIDA:
+                                    fprintf(stderr, BAD_REQUEST);
+                                    clt->cod_estado = 400;
+                                    clt->cerrar_conexion_salida = 1;
+                                    break;
+                                case HTTP_INCOMPLETA:
+                                    
+                                    break;
+                            }
+                            if(term_atencion_clt == 1){break;}
+
+                            if(tipo_http == HTTP_INCOMPLETA){
+                                if(clt->recibidos >= LIMITE){fprintf(stderr, BAD_REQUEST); clt->cod_estado = 400; clt->cerrar_conexion_salida = 1; break;}
+                            }
+                            if(tipo_http == HTTP_OK){break;}
+                            if(tipo_http == HTTP_INVALIDA){break;}
+                            if(tipo_http == HTTP_METODO_NO_PERMITIDO){break;}
+                        }
+
+                        if(clt->recibidos == LIMITE){fprintf(stderr, "La petición supera el tamaño del buffer\n"); clt->cod_estado = 400; clt->cerrar_conexion_salida = 1; break;}
                         rcv = recv(clt->ns, clt->buffer + clt->recibidos, LIMITE - clt->recibidos, 0);
                         if(rcv == -1){
                             if(errno == EINTR){
@@ -134,41 +174,13 @@ int main(){
                             }else{
                                 fprintf(stderr, BAD_REQUEST); 
                                 clt->cod_estado = 400;
+                                clt->cerrar_conexion_salida = 1;
                                 break;
                             }
                         }
                         
                         clt->recibidos += rcv;
                         
-                        size_t bytes_consumidos = 0;
-                        tipo_http = analizar_solicitud_http(clt->buffer, clt->recibidos, ruta, sizeof ruta, &clt->cerrar_conexion_salida, &bytes_consumidos);
-
-                        switch(tipo_http){
-                            case HTTP_OK:
-                                printf("Ruta: %s\n %s", ruta, OK);
-                                clt->cod_estado = 200;
-                                break;
-                            case HTTP_METODO_NO_PERMITIDO:
-                                fprintf(stderr, NOT_ALLOWED);
-                                clt->cod_estado = 405;
-                                break;
-                            case HTTP_INVALIDA:
-                                fprintf(stderr, BAD_REQUEST);
-                                clt->cod_estado = 400;
-                                break;
-                            case HTTP_INCOMPLETA:
-                                
-                                break;
-                        }
-
-                        if(tipo_http == HTTP_INCOMPLETA){
-                            if(clt->recibidos >= LIMITE){fprintf(stderr, BAD_REQUEST); clt->cod_estado = 400; break;}
-                            continue; /*Continua si la solicitud esta incompleta pero todavia hay espacio para recibirla*/
-                        }
-                        if(tipo_http == HTTP_OK){
-                            break;
-                        }
-                        break;
                     }
                     if(term_atencion_clt == 1){term_atencion_clt = 0; continue;}
                     size_t tam_archivo = 0;
@@ -192,6 +204,7 @@ int main(){
                     }
 
                     if(clt->cod_estado != 0){
+                        if(clt->cod_estado != 200){tam_archivo = 0;}
                         clt->bytes_generados = generar_respuesta_http(clt->cod_estado, mime, tam_archivo, !clt->cerrar_conexion_salida, clt->buffer_salida, sizeof(clt->buffer_salida)); 
                         if(clt->bytes_generados <= 0){
                             fprintf(stderr, "No se pudo generar la respuesta HTTP");
@@ -208,7 +221,7 @@ int main(){
                     /*Envio de encabezados*/
                     ssize_t snd = 0;
                     int eagain = 0;
-                    while(clt->bytes_enviados < clt->bytes_generados){
+                    while(clt->bytes_enviados < (size_t) clt->bytes_generados){
                         snd = send(clt->ns, clt->buffer_salida + clt->bytes_enviados, clt->bytes_generados - clt->bytes_enviados, MSG_NOSIGNAL); /*MSG_NOSIGNAL evita generar una señal SIGPIPE si el cliente cierra la conexion*/
                         if(snd == -1){
                             if(errno == EINTR){
@@ -229,6 +242,7 @@ int main(){
                     if(eagain == 1){continue;}
                     ssize_t leidos = 0;
                     int eagain2 = 0;
+                    int term_resp = 0;
                     if(clt->cod_estado == 200 && clt->fd != -1){   
                         while(1){
                             if(clt->bytes_archivo_enviados == clt->bytes_leidos){
@@ -244,25 +258,8 @@ int main(){
                                 }
                                 if(leidos == -1){perror("read"); liberar_recursos(ep, clt); term_atencion_clt = 1; break;}
                                 if(leidos == 0){
-                                    if(clt->cerrar_conexion_salida == 1){
-                                        liberar_recursos(ep, clt);
-                                        term_atencion_clt = 1;
-                                        break;
-                                    }else{
-                                        close(clt->fd);
-                                        clt->fd = -1;
-                                        clt->cod_estado = 0;
-                                        clt->bytes_generados = 0;
-                                        clt->bytes_enviados = 0;
-                                        clt->bytes_leidos= 0;
-                                        clt->bytes_archivo_enviados = 0;
-                                        clt->recibidos = 0;
-                                        clt->fase = RECIBIENDO;
-                                        ep_ev.events = EPOLLIN;
-                                        ep_ev.data.ptr = clt;
-                                        if(epoll_ctl(ep, EPOLL_CTL_MOD, clt->ns, &ep_ev) == -1){liberar_recursos(ep, clt); term_atencion_clt = 1; break;} 
-                                        break;
-                                    }
+                                    term_resp = 1;
+                                    break;
                                 }
                                 clt->bytes_archivo_enviados = 0;
                                 clt->bytes_leidos = leidos;
@@ -287,17 +284,38 @@ int main(){
                                 if(snd2 == 0){fprintf(stderr, "Falta de progreso"); liberar_recursos(ep, clt); term_atencion_clt=1; break;}
                                 clt->bytes_archivo_enviados += snd2;
                             }
+                            
                             if(term_atencion_clt == 1){break;}
                             if(eagain2 == 1){break;}
                         }
                         if(term_atencion_clt == 1){continue;}
                         if(eagain2 == 1){continue;}
                     }
+                    if(clt->cod_estado != 200){term_resp = 1;}
+                    if(term_resp == 1){
+                        if(clt->cerrar_conexion_salida == 1){
+                            liberar_recursos(ep, clt);
+                            continue;
+                        }else{
+                            if(clt->fd != -1){close(clt->fd);}
+                            clt->fd = -1;
+                            clt->cod_estado = 0;
+                            clt->bytes_generados = 0;
+                            clt->bytes_enviados = 0;
+                            clt->bytes_leidos= 0;
+                            clt->bytes_archivo_enviados = 0;
+                            clt->fase = RECIBIENDO;
+                            ep_ev.events = EPOLLIN;
+                            ep_ev.data.ptr = clt;
+                            if(epoll_ctl(ep, EPOLL_CTL_MOD, clt->ns, &ep_ev) == -1){liberar_recursos(ep, clt); continue;} 
+                            if(clt->recibidos == 0){continue;}
+                            if(clt->recibidos > 0){goto procesar_buf_clt;}
+                        }
+                    }
                 }
             }            
         }
     }
- 
     close(s);
     return EXIT_SUCCESS;
 }
