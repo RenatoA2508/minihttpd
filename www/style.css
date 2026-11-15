@@ -11,3 +11,12 @@
 .parrafo{
     color: blue;
 }
+
+.boton{
+    background-color: yellow;
+    border-radius: 10px;
+}
+
+.boton:hover{
+    background-color: lightgray;
+}
