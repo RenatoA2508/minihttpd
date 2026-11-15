@@ -149,9 +149,9 @@ int validar_valor_connection(const char *cadena, size_t longitud_cadena, int *ce
     return 1;
 }
 
-int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, size_t capacidad_ruta, int *cerrar_conexion_salida){
+int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, size_t capacidad_ruta, int *cerrar_conexion_salida, size_t *bytes_consumidos){
     int cerrar_conexion = 0; /*Mantener la conexion abierta. Por defecto en HTTP*/
-
+    *bytes_consumidos = 0;
     const char *fin_encabezado = memmem(buffer, longitud, "\r\n\r\n", 4); /*Identifica el fin de la zona de encabezados*/
     if(fin_encabezado == NULL){
         if(longitud >= LIMITE_ENCABEZADOS){return HTTP_INVALIDA;} /*No existe \r\n\r\n y la seccion iguala o supera el limite*/
@@ -244,6 +244,7 @@ int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, siz
         memcpy(ruta, primer_espacio + 1, longitud_ruta);
         ruta[longitud_ruta] = '\0';
     }
+    *bytes_consumidos = fin_encabezado - buffer + 4;
     if(contador_host != 1){
         return HTTP_INVALIDA;
     }else if (metodo_no_permitido == 0){

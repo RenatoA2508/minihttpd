@@ -40,9 +40,10 @@ struct cliente{
     size_t bytes_archivo_enviados;
 };
 
-void liberar_recursos(int ep, struct epoll_event ep_ev, struct cliente *clt){
-    if(epoll_ctl(ep, EPOLL_CTL_DEL, clt->ns, &ep_ev) == -1){perror("epoll_ctl"); close(clt->ns); free(clt); return;}
+void liberar_recursos(int ep, struct cliente *clt){
+    if(epoll_ctl(ep, EPOLL_CTL_DEL, clt->ns, NULL) == -1){perror("epoll_ctl");}
     close(clt->ns);
+    if(clt->fd != -1){close(clt->fd);}
     free(clt);
 }
 
@@ -97,15 +98,18 @@ int main(){
                     clt->fase = RECIBIENDO;
                     ep_ev.events = EPOLLIN;
                     ep_ev.data.ptr = clt;
-                    if(epoll_ctl(ep, EPOLL_CTL_ADD, ns, &ep_ev) == -1){perror("epoll_ctl"); close(ns); free(clt);continue;}
+                    if(epoll_ctl(ep, EPOLL_CTL_ADD, ns, &ep_ev) == -1){ perror("epoll_ctl"); close(ns); free(clt); continue;}
                 }
             }else{
                 struct cliente *clt = (struct cliente *)events[i].data.ptr;
 
+                if(events[i].events & EPOLLERR){liberar_recursos(ep, clt); continue;}
+                if(events[i].events & EPOLLHUP && !(events[i].events & EPOLLIN)){liberar_recursos(ep, clt); continue;}
+
                 ssize_t rcv = 0;
                 int tipo_http = 0;
                 char ruta[LIMITE_URI+1];
-                int salir_bucle_int = 0;
+                int term_atencion_clt = 0;
                 if(events[i].events & EPOLLIN && clt->fase == RECIBIENDO){
                     while(1){
                         if(clt->recibidos == LIMITE){fprintf(stderr, "La petición supera el tamaño del buffer\n"); clt->cod_estado = 400; break;}
@@ -117,18 +121,15 @@ int main(){
                             }
                             if(errno == EAGAIN || errno == EWOULDBLOCK){break;}
                             perror("recv"); 
-                            if(epoll_ctl(ep, EPOLL_CTL_DEL, clt->ns, &ep_ev) == -1){perror("epoll_ctl"); close(clt->ns); free(clt);break;}
-                            close(clt->ns);
-                            free(clt);
+                            liberar_recursos(ep, clt);
+                            term_atencion_clt = 1;
                             break;
                         }
                         if(rcv == 0){
                             if(clt->recibidos == 0){
                                 fprintf(stderr, "El cliente ha cerrado la conexión sin enviar datos\n"); 
-                                if(epoll_ctl(ep, EPOLL_CTL_DEL, clt->ns, &ep_ev) == -1){perror("epoll_ctl"); close(clt->ns); free(clt);break;}
-                                close(clt->ns);
-                                free(clt);
-                                salir_bucle_int = 1;
+                                liberar_recursos(ep, clt);
+                                term_atencion_clt = 1;
                                 break;
                             }else{
                                 fprintf(stderr, BAD_REQUEST); 
@@ -136,10 +137,11 @@ int main(){
                                 break;
                             }
                         }
-                        if(salir_bucle_int == 1){break;}
+                        
                         clt->recibidos += rcv;
                         
-                        tipo_http = analizar_solicitud_http(clt->buffer, clt->recibidos, ruta, sizeof ruta, &clt->cerrar_conexion_salida);
+                        size_t bytes_consumidos = 0;
+                        tipo_http = analizar_solicitud_http(clt->buffer, clt->recibidos, ruta, sizeof ruta, &clt->cerrar_conexion_salida, &bytes_consumidos);
 
                         switch(tipo_http){
                             case HTTP_OK:
@@ -168,7 +170,7 @@ int main(){
                         }
                         break;
                     }
-                    
+                    if(term_atencion_clt == 1){term_atencion_clt = 0; continue;}
                     size_t tam_archivo = 0;
 
                     char ruta_efectiva[1024];
@@ -193,20 +195,19 @@ int main(){
                         clt->bytes_generados = generar_respuesta_http(clt->cod_estado, mime, tam_archivo, !clt->cerrar_conexion_salida, clt->buffer_salida, sizeof(clt->buffer_salida)); 
                         if(clt->bytes_generados <= 0){
                             fprintf(stderr, "No se pudo generar la respuesta HTTP");
-                            if(epoll_ctl(ep, EPOLL_CTL_DEL, clt->ns, &ep_ev) == -1){perror("epoll_ctl"); close(clt->ns); free(clt);break;}
-                            close(clt->ns);
-                            free(clt);
-                            break;
+                            liberar_recursos(ep, clt);
+                            continue;
                         }else{
                             clt->fase = ENVIANDO;
                             ep_ev.events = EPOLLOUT;
                             ep_ev.data.ptr = clt;
-                            if(epoll_ctl(ep, EPOLL_CTL_MOD, clt->ns, &ep_ev) == -1){perror("epoll_ctl"); close(clt->ns); free(clt);break;}
+                            if(epoll_ctl(ep, EPOLL_CTL_MOD, clt->ns, &ep_ev) == -1){liberar_recursos(ep, clt); continue;}
                         }
                     }
                 }else if(events[i].events & EPOLLOUT && clt->fase == ENVIANDO){
                     /*Envio de encabezados*/
                     ssize_t snd = 0;
+                    int eagain = 0;
                     while(clt->bytes_enviados < clt->bytes_generados){
                         snd = send(clt->ns, clt->buffer_salida + clt->bytes_enviados, clt->bytes_generados - clt->bytes_enviados, MSG_NOSIGNAL); /*MSG_NOSIGNAL evita generar una señal SIGPIPE si el cliente cierra la conexion*/
                         if(snd == -1){
@@ -214,28 +215,61 @@ int main(){
                                 fprintf(stderr, "Interrupcion por señal");
                                 continue;
                             }
-                            if(errno == EAGAIN){break;}
+                            if(errno == EAGAIN){eagain = 1; break;}
                             perror("send"); 
+                            liberar_recursos(ep, clt);
+                            term_atencion_clt = 1;
                             break;
                         }
-                        if(snd == 0){fprintf(stderr, "Falta de progreso"); break;}
+                        if(snd == 0){fprintf(stderr, "Falta de progreso"); liberar_recursos(ep, clt); term_atencion_clt = 1; break;}
                         clt->bytes_enviados += snd;
                     }
+                    if(term_atencion_clt == 1){term_atencion_clt = 0; continue;}
                     /*Envio de archivo*/
+                    if(eagain == 1){continue;}
                     ssize_t leidos = 0;
+                    int eagain2 = 0;
                     if(clt->cod_estado == 200 && clt->fd != -1){   
                         while(1){
-                            leidos = read(clt->fd, clt->buffer_lectura, sizeof(clt->buffer_lectura));
-                            if(leidos == -1){
-                                if(errno == EINTR){
-                                    fprintf(stderr, "Interrupción por señal\n"); 
-                                    continue;
+                            if(clt->bytes_archivo_enviados == clt->bytes_leidos){
+                                
+                                leidos = read(clt->fd, clt->buffer_lectura, sizeof(clt->buffer_lectura));
+                                if(leidos == -1){
+                                    if(errno == EINTR){
+                                        fprintf(stderr, "Interrupción por señal\n"); 
+                                        while(leidos == -1 && errno == EINTR){
+                                            leidos = read(clt->fd, clt->buffer_lectura, sizeof(clt->buffer_lectura));
+                                        }   
+                                    }
                                 }
-                                perror("read"); 
-                                break;
+                                if(leidos == -1){perror("read"); liberar_recursos(ep, clt); term_atencion_clt = 1; break;}
+                                if(leidos == 0){
+                                    if(clt->cerrar_conexion_salida == 1){
+                                        liberar_recursos(ep, clt);
+                                        term_atencion_clt = 1;
+                                        break;
+                                    }else{
+                                        close(clt->fd);
+                                        clt->fd = -1;
+                                        clt->cod_estado = 0;
+                                        clt->bytes_generados = 0;
+                                        clt->bytes_enviados = 0;
+                                        clt->bytes_leidos= 0;
+                                        clt->bytes_archivo_enviados = 0;
+                                        clt->recibidos = 0;
+                                        clt->fase = RECIBIENDO;
+                                        ep_ev.events = EPOLLIN;
+                                        ep_ev.data.ptr = clt;
+                                        if(epoll_ctl(ep, EPOLL_CTL_MOD, clt->ns, &ep_ev) == -1){liberar_recursos(ep, clt); term_atencion_clt = 1; break;} 
+                                        break;
+                                    }
+                                }
+                                clt->bytes_archivo_enviados = 0;
+                                clt->bytes_leidos = leidos;
                             }
-                            if(leidos == 0){break;}
-                            clt->bytes_leidos = leidos;
+                            if(term_atencion_clt == 1){break;}
+                            
+
                             ssize_t snd2 = 0;
                             while(clt->bytes_archivo_enviados < clt->bytes_leidos){
                                 snd2 = send(clt->ns, clt->buffer_lectura + clt->bytes_archivo_enviados, clt->bytes_leidos - clt->bytes_archivo_enviados, MSG_NOSIGNAL); /*MSG_NOSIGNAL evita generar una señal SIGPIPE si el cliente cierra la conexion*/
@@ -244,15 +278,20 @@ int main(){
                                         fprintf(stderr, "Interrupcion por señal");
                                         continue;
                                     }
-                                    if(errno == EAGAIN){break;}
+                                    if(errno == EAGAIN){eagain2 = 1; break;}
                                     perror("send");
-
+                                    liberar_recursos(ep, clt);
+                                    term_atencion_clt = 1;
                                     break;
                                 }
-                                if(snd2 == 0){fprintf(stderr, "Falta de progreso"); break;}
+                                if(snd2 == 0){fprintf(stderr, "Falta de progreso"); liberar_recursos(ep, clt); term_atencion_clt=1; break;}
                                 clt->bytes_archivo_enviados += snd2;
                             }
+                            if(term_atencion_clt == 1){break;}
+                            if(eagain2 == 1){break;}
                         }
+                        if(term_atencion_clt == 1){continue;}
+                        if(eagain2 == 1){continue;}
                     }
                 }
             }            

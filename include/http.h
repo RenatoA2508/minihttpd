@@ -14,7 +14,7 @@ enum resultados {
     HTTP_METODO_NO_PERMITIDO,
 };
 
-int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, size_t capacidad_ruta, int *cerrar_conexion);
+int analizar_solicitud_http(const char *buffer, size_t longitud, char *ruta, size_t capacidad_ruta, int *cerrar_conexion, size_t *bytes_consumidos);
 
 int generar_respuesta_http(int cod_estado, const char *mime, size_t longitud_cuerpo, int persistencia, char *buf_salida, size_t capacidad_buf_salida);
 
